@@ -1,4 +1,12 @@
+import base64
+
 BASE = "/api/v1/contacts"
+
+# 1x1 transparent PNG.
+VALID_PNG_PHOTO = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def test_health(client):
@@ -144,3 +152,53 @@ def test_delete_contact(client, payload):
 def test_root_lists_entrypoints(client):
     body = client.get("/").json()
     assert body["contacts"] == BASE
+
+
+def test_create_with_photo_round_trips(client, payload):
+    response = client.post(BASE, json={**payload, "photo": VALID_PNG_PHOTO})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["photo"] == VALID_PNG_PHOTO
+
+    fetched = client.get(f"{BASE}/{body['id']}").json()
+    assert fetched["photo"] == VALID_PNG_PHOTO
+
+
+def test_create_rejects_malformed_photo(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "not-a-data-uri"})
+    assert response.status_code == 422
+
+
+def test_create_rejects_oversized_photo(client, payload):
+    # Valid PNG signature, but padded well past the 1 MB decoded limit.
+    oversized = b"\x89PNG" + b"0" * 1_100_000
+    data_uri = "data:image/png;base64," + base64.b64encode(oversized).decode()
+    response = client.post(BASE, json={**payload, "photo": data_uri})
+    assert response.status_code == 422
+
+
+def test_create_rejects_signature_mismatch(client, payload):
+    # Declared as PNG but the decoded bytes carry the JPEG magic signature.
+    jpeg_bytes = b"\xff\xd8\xff" + b"\x00" * 16
+    data_uri = "data:image/png;base64," + base64.b64encode(jpeg_bytes).decode()
+    response = client.post(BASE, json={**payload, "photo": data_uri})
+    assert response.status_code == 422
+
+
+def test_put_omitting_photo_clears_it_backend_full_replace(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": VALID_PNG_PHOTO}).json()["id"]
+    response = client.put(f"{BASE}/{contact_id}", json=payload)
+    assert response.status_code == 200
+    assert response.json()["photo"] is None
+
+
+def test_put_resending_photo_alongside_other_changes_preserves_it(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": VALID_PNG_PHOTO}).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={**payload, "photo": VALID_PNG_PHOTO, "phone": "+1-000-000-0000"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["photo"] == VALID_PNG_PHOTO
+    assert body["phone"] == "+1-000-000-0000"
