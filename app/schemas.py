@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
 _PHOTO_MAX_BYTES = 1_048_576
+# Max base64 payload length that can decode to _PHOTO_MAX_BYTES, so oversized
+# payloads are rejected by length before spending CPU/memory decoding them.
+_PHOTO_MAX_B64_LEN = ((_PHOTO_MAX_BYTES + 2) // 3) * 4
 _PHOTO_DATA_URI_RE = re.compile(r"^data:image/(?P<subtype>jpeg|png|webp);base64,(?P<payload>[A-Za-z0-9+/]+=*)$")
 _PHOTO_SIGNATURES = {
     "jpeg": lambda b: b[:3] == b"\xff\xd8\xff",
@@ -25,8 +28,12 @@ def _validate_photo(value: str | None) -> str | None:
         )
 
     subtype = match.group("subtype")
+    payload = match.group("payload")
+    if len(payload) > _PHOTO_MAX_B64_LEN:
+        raise ValueError(f"Photo exceeds {_PHOTO_MAX_BYTES} byte (1 MB) limit")
+
     try:
-        decoded = base64.b64decode(match.group("payload"), validate=True)
+        decoded = base64.b64decode(payload, validate=True)
     except Exception as exc:
         raise ValueError("Photo payload is not valid base64") from exc
 
