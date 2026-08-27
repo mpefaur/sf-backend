@@ -1,6 +1,49 @@
+import base64
+import re
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+_PHOTO_MAX_BYTES = 1_048_576
+# Max base64 payload length that can decode to _PHOTO_MAX_BYTES, so oversized
+# payloads are rejected by length before spending CPU/memory decoding them.
+_PHOTO_MAX_B64_LEN = ((_PHOTO_MAX_BYTES + 2) // 3) * 4
+_PHOTO_DATA_URI_RE = re.compile(r"^data:image/(?P<subtype>jpeg|png|webp);base64,(?P<payload>[A-Za-z0-9+/]+=*)$")
+_PHOTO_SIGNATURES = {
+    "jpeg": lambda b: b[:3] == b"\xff\xd8\xff",
+    "png": lambda b: b[:4] == b"\x89PNG",
+    "webp": lambda b: b[:4] == b"RIFF" and b[8:12] == b"WEBP",
+}
+
+
+def _validate_photo(value: str | None) -> str | None:
+    """Shared by every contact schema: format, size, and magic-byte checks (FR-006, FR-007)."""
+    if value is None:
+        return None
+
+    match = _PHOTO_DATA_URI_RE.match(value)
+    if not match:
+        raise ValueError(
+            "Photo must be a data URI of the form data:image/(jpeg|png|webp);base64,<payload>"
+        )
+
+    subtype = match.group("subtype")
+    payload = match.group("payload")
+    if len(payload) > _PHOTO_MAX_B64_LEN:
+        raise ValueError(f"Photo exceeds {_PHOTO_MAX_BYTES} byte (1 MB) limit")
+
+    try:
+        decoded = base64.b64decode(payload, validate=True)
+    except Exception as exc:
+        raise ValueError("Photo payload is not valid base64") from exc
+
+    if len(decoded) > _PHOTO_MAX_BYTES:
+        raise ValueError(f"Photo exceeds {_PHOTO_MAX_BYTES} byte (1 MB) limit")
+
+    if not _PHOTO_SIGNATURES[subtype](decoded):
+        raise ValueError(f"Photo bytes do not match declared type image/{subtype}")
+
+    return value
 
 
 class ContactBase(BaseModel):
@@ -69,6 +112,19 @@ class ContactBase(BaseModel):
         description="Free-form notes about the contact. No length limit.",
         examples=["Met at the SF hackathon."],
     )
+    photo: str | None = Field(
+        default=None,
+        description=(
+            "Photo as a self-describing data URI: "
+            "data:image/(jpeg|png|webp);base64,<payload>. Max 1 MB decoded."
+        ),
+        examples=["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."],
+    )
+
+    @field_validator("photo")
+    @classmethod
+    def _check_photo(cls, value: str | None) -> str | None:
+        return _validate_photo(value)
 
 
 _FULL_EXAMPLE = {
@@ -134,6 +190,18 @@ class ContactUpdate(BaseModel):
     postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
     country: str | None = Field(default=None, max_length=120, description="New country.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
+    photo: str | None = Field(
+        default=None,
+        description=(
+            "New photo as a data URI: data:image/(jpeg|png|webp);base64,<payload>. "
+            "Max 1 MB decoded."
+        ),
+    )
+
+    @field_validator("photo")
+    @classmethod
+    def _check_photo(cls, value: str | None) -> str | None:
+        return _validate_photo(value)
 
 
 class ContactRead(ContactBase):
