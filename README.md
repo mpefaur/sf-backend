@@ -107,11 +107,20 @@ also read):
 (case-insensitive). Everything else is optional.
 
 ```
-first_name, last_name, email, phone, company, job_title,
-address, city, state, postal_code, country, notes
+first_name, last_name, email, phone, company, job_title, notes, photo, addresses
 ```
 
-Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
+`photo` is a data URI (`data:image/(jpeg|png|webp);base64,<payload>`), max 1 MB decoded.
+
+`addresses` is a list of typed address objects, each with `type`
+(`Home`/`Work`/`Other`) plus `street`, `city`, `state`, `postal_code`, `country`
+(all optional strings). On `PUT`, the submitted list *is* the contact's new
+complete address set — omitting it deletes every existing address, same as any
+other field a full replace clears. On `PATCH`, omitting `addresses` leaves the
+list unchanged; sending it (including `null` or `[]`) replaces it.
+
+Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC); each
+address in a response also has its own server-assigned `id`.
 
 ### List query parameters
 

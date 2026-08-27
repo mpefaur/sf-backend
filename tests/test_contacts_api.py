@@ -202,3 +202,102 @@ def test_put_resending_photo_alongside_other_changes_preserves_it(client, payloa
     body = response.json()
     assert body["photo"] == VALID_PNG_PHOTO
     assert body["phone"] == "+1-000-000-0000"
+
+
+HOME_ADDRESS = {"type": "Home", "city": "London", "country": "UK"}
+WORK_ADDRESS = {
+    "type": "Work",
+    "street": "1 Market St",
+    "city": "San Francisco",
+    "state": "CA",
+    "postal_code": "94105",
+    "country": "USA",
+}
+
+
+def test_create_with_addresses_round_trips(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS, WORK_ADDRESS]})
+    assert response.status_code == 201
+    body = response.json()
+    assert len(body["addresses"]) == 2
+    for address, expected in zip(body["addresses"], [HOME_ADDRESS, WORK_ADDRESS]):
+        assert address["id"] > 0
+        for key, value in expected.items():
+            assert address[key] == value
+
+    fetched = client.get(f"{BASE}/{body['id']}").json()
+    assert len(fetched["addresses"]) == 2
+
+
+def test_create_rejects_invalid_address_type(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [{"type": "Vacation"}]})
+    assert response.status_code == 422
+
+
+def test_put_omitting_addresses_clears_them_backend_full_replace(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.put(f"{BASE}/{contact_id}", json=payload)
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+
+
+def test_put_resending_addresses_alongside_other_changes_preserves_them(client, payload):
+    contact_id = client.post(
+        BASE, json={**payload, "addresses": [HOME_ADDRESS, WORK_ADDRESS]}
+    ).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={**payload, "addresses": [HOME_ADDRESS, WORK_ADDRESS], "phone": "+1-000-000-0000"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["addresses"]) == 2
+    assert body["phone"] == "+1-000-000-0000"
+
+
+def test_put_can_edit_one_address_and_remove_another(client, payload):
+    contact_id = client.post(
+        BASE, json={**payload, "addresses": [HOME_ADDRESS, WORK_ADDRESS]}
+    ).json()["id"]
+    edited_home = {**HOME_ADDRESS, "city": "Manchester"}
+    response = client.put(f"{BASE}/{contact_id}", json={**payload, "addresses": [edited_home]})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["addresses"]) == 1
+    assert body["addresses"][0]["city"] == "Manchester"
+
+
+def test_delete_contact_cascades_to_addresses(client, payload):
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models import Address
+
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    assert client.delete(f"{BASE}/{contact_id}").status_code == 204
+    assert client.get(f"{BASE}/{contact_id}").status_code == 404
+
+    with SessionLocal() as db:
+        orphans = db.execute(select(Address).where(Address.contact_id == contact_id)).scalars().all()
+        assert orphans == []
+
+
+def test_patch_explicit_null_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": None})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+
+
+def test_patch_omitting_addresses_leaves_them_unchanged(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"phone": "+1-000-000-0000"})
+    assert response.status_code == 200
+    assert len(response.json()["addresses"]) == 1
+
+
+def test_patch_addresses_only_bumps_updated_at(client, payload):
+    created = client.post(BASE, json=payload).json()
+    response = client.patch(f"{BASE}/{created['id']}", json={"addresses": [HOME_ADDRESS]})
+    assert response.status_code == 200
+    assert response.json()["updated_at"] > created["updated_at"]

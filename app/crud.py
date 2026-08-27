@@ -1,7 +1,9 @@
-from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 
-from app.models import Contact
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, selectinload
+
+from app.models import Address, Contact
 from app.schemas import ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
@@ -34,7 +36,7 @@ def list_contacts(
     order: str = "asc",
 ) -> tuple[list[Contact], int]:
     """Return (page of contacts, total matching count)."""
-    stmt = select(Contact)
+    stmt = select(Contact).options(selectinload(Contact.addresses))
 
     if search:
         pattern = f"%{search.strip().lower()}%"
@@ -59,10 +61,15 @@ def list_contacts(
     return list(items), total
 
 
+def _build_addresses(addresses: list[dict]) -> list[Address]:
+    return [Address(**address) for address in addresses]
+
+
 def create_contact(db: Session, payload: ContactCreate) -> Contact:
     data = payload.model_dump()
+    addresses = data.pop("addresses")
     data["email"] = _normalize_email(data["email"])
-    contact = Contact(**data)
+    contact = Contact(**data, addresses=_build_addresses(addresses))
     db.add(contact)
     db.commit()
     db.refresh(contact)
@@ -70,16 +77,28 @@ def create_contact(db: Session, payload: ContactCreate) -> Contact:
 
 
 def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> Contact:
-    for field, value in payload.model_dump().items():
+    data = payload.model_dump()
+    addresses = data.pop("addresses")
+    for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    contact.addresses = _build_addresses(addresses)
+    contact.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(contact)
     return contact
 
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    data = payload.model_dump(exclude_unset=True)
+    has_addresses = "addresses" in data
+    addresses = data.pop("addresses", None)
+    for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
+    if has_addresses:
+        # Reassigning the relationship doesn't touch a Contact column, so it
+        # wouldn't otherwise trip the mapped onupdate for updated_at.
+        contact.addresses = _build_addresses(addresses or [])
+        contact.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(contact)
     return contact
