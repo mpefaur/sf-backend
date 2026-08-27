@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models import Address, Contact
 from app.schemas import ContactCreate, ContactReplace, ContactUpdate
@@ -34,7 +36,7 @@ def list_contacts(
     order: str = "asc",
 ) -> tuple[list[Contact], int]:
     """Return (page of contacts, total matching count)."""
-    stmt = select(Contact)
+    stmt = select(Contact).options(selectinload(Contact.addresses))
 
     if search:
         pattern = f"%{search.strip().lower()}%"
@@ -80,6 +82,7 @@ def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> C
     for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
     contact.addresses = _build_addresses(addresses)
+    contact.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(contact)
     return contact
@@ -87,11 +90,15 @@ def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> C
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
     data = payload.model_dump(exclude_unset=True)
+    has_addresses = "addresses" in data
     addresses = data.pop("addresses", None)
     for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
-    if addresses is not None:
-        contact.addresses = _build_addresses(addresses)
+    if has_addresses:
+        # Reassigning the relationship doesn't touch a Contact column, so it
+        # wouldn't otherwise trip the mapped onupdate for updated_at.
+        contact.addresses = _build_addresses(addresses or [])
+        contact.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(contact)
     return contact

@@ -280,3 +280,24 @@ def test_delete_contact_cascades_to_addresses(client, payload):
     with SessionLocal() as db:
         orphans = db.execute(select(Address).where(Address.contact_id == contact_id)).scalars().all()
         assert orphans == []
+
+
+def test_patch_explicit_null_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": None})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+
+
+def test_patch_omitting_addresses_leaves_them_unchanged(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"phone": "+1-000-000-0000"})
+    assert response.status_code == 200
+    assert len(response.json()["addresses"]) == 1
+
+
+def test_patch_addresses_only_bumps_updated_at(client, payload):
+    created = client.post(BASE, json=payload).json()
+    response = client.patch(f"{BASE}/{created['id']}", json={"addresses": [HOME_ADDRESS]})
+    assert response.status_code == 200
+    assert response.json()["updated_at"] > created["updated_at"]
